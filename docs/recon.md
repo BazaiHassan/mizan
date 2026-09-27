@@ -274,5 +274,18 @@ for duplicate Bash rewriting hooks.
 4. Fork RTK now? Canonical upstream is clearly `rtk-ai/rtk`. I didn't fork it,
    because nothing in phases 1–2 needs a fork.
 5. Count subagent (sidechain) Bash calls in reports?
-6. Supported OS for phase 1: Linux + macOS first, with Windows builds but lighter
-   testing?
+
+## 9. Decisions
+- **Platform priority** (2026-09-27): Linux first — Fedora and Ubuntu as primary
+  targets, then other major distros (Debian, Arch, openSUSE, …); macOS second;
+  Windows last. Implications:
+  - CI tests run on Ubuntu plus a Fedora container from the start. macOS and
+    Windows jobs are added later, in that order.
+  - Release binaries: Linux `x86_64` and `aarch64` built against musl (static, so
+    one binary works on every distro, with no glibc version issues). macOS and
+    Windows artifacts follow.
+  - Paths are resolved through `dirs` (XDG on Linux), never hard-coded
+    `~/.config`, so macOS and Windows need no special-casing later.
+  - Packaging order: `cargo install` and a static tarball first. Fedora COPR/RPM
+    and a `.deb` come next, then a Homebrew tap (also covers Linuxbrew), then
+    Windows.
