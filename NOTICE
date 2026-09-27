@@ -1,0 +1,20 @@
+mzn
+Copyright 2026 Hassan Bazai
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+mzn is a companion to RTK (Rust Token Killer), https://github.com/rtk-ai/rtk,
+Copyright 2024 rtk-ai and rtk-ai Labs, licensed under the Apache License,
+Version 2.0. mzn does not include or redistribute RTK source code or binaries.
+It invokes an RTK binary that the user installed separately, reads RTK's
+local stats database read-only, and writes filter definitions in RTK's
+documented TOML filter format. RTK's file formats, paths and command-line
+behaviour were studied from its public source to stay compatible.
+
+mzn can optionally detect Lerim, https://github.com/lerim-dev/lerim-cli,
+licensed under the Apache License, Version 2.0. mzn does not include Lerim
+code; it only checks for Lerim's presence and configuration.
+
+Third-party Rust crates linked into the mzn binary are distributed under
+their own licenses (MIT and/or Apache-2.0); see Cargo.lock for the list.
+The binary embeds SQLite (public domain) via the rusqlite crate.

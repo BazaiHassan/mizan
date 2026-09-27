@@ -1,0 +1,15 @@
+{
+  "name": "mizan",
+  "description": "Plugins for mzn, the RTK companion that tunes RTK to each project.",
+  "owner": {
+    "name": "Hassan Bazai",
+    "url": "https://github.com/BazaiHassan"
+  },
+  "plugins": [
+    {
+      "name": "mzn",
+      "source": "./plugin",
+      "description": "RTK coach: /coach finds token waste in this project's Claude Code sessions and suggests RTK filters. Requires the mzn binary."
+    }
+  ]
+}

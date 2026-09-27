@@ -1,0 +1,401 @@
+//! RTK TOML filter files: reading user filters, checking RTK's trust store,
+//! and editing mzn's managed block.
+//!
+//! RTK loads exactly two custom filter files (`.rtk/filters.toml` in the
+//! project, and `<config_dir>/rtk/filters.toml`), so generated filters live in
+//! a marked block inside the project file. Everything outside the markers
+//! belongs to the user and is never modified.
+
+use anyhow::{Context, Result, bail};
+use regex::Regex;
+use serde::Serialize;
+use std::path::{Path, PathBuf};
+
+pub const BLOCK_START: &str = "# >>> managed by mzn >>>";
+pub const BLOCK_END: &str = "# <<< managed by mzn <<<";
+pub const NAME_PREFIX: &str = "mzn-";
+
+/// A filter definition, limited to the RTK fields mzn generates.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FilterDef {
+    pub name: String,
+    pub description: String,
+    pub match_command: String,
+    pub strip_ansi: bool,
+    pub strip_lines_matching: Vec<String>,
+    pub truncate_lines_at: Option<usize>,
+    pub tail_lines: Option<usize>,
+    pub on_empty: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trust {
+    Trusted,
+    Untrusted,
+    Changed,
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FilterFile {
+    pub path: PathBuf,
+    pub exists: bool,
+    pub trust: Trust,
+    /// `(name, match_command)` of every filter outside mzn's block.
+    pub user_filters: Vec<(String, String)>,
+    pub managed_filters: Vec<String>,
+    pub parse_error: Option<String>,
+}
+
+impl FilterFile {
+    pub fn load(path: &Path) -> FilterFile {
+        let mut f = FilterFile {
+            path: path.to_path_buf(),
+            exists: path.is_file(),
+            trust: Trust::Missing,
+            user_filters: Vec::new(),
+            managed_filters: Vec::new(),
+            parse_error: None,
+        };
+        let Ok(bytes) = std::fs::read(path) else {
+            return f;
+        };
+        f.trust = trust_status(path, &bytes);
+        let text = String::from_utf8_lossy(&bytes);
+        match text.parse::<toml::Table>() {
+            Ok(table) => {
+                if let Some(filters) = table.get("filters").and_then(|v| v.as_table()) {
+                    for (name, def) in filters {
+                        let m = def
+                            .get("match_command")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if name.starts_with(NAME_PREFIX) && managed_block(&text).is_some() {
+                            f.managed_filters.push(name.clone());
+                        } else {
+                            f.user_filters.push((name.clone(), m));
+                        }
+                    }
+                }
+            }
+            Err(e) => f.parse_error = Some(e.to_string()),
+        }
+        f
+    }
+
+    /// Whether any user filter in this file would match `command`.
+    pub fn user_filter_matching(&self, command: &str) -> Option<&str> {
+        self.user_filters.iter().find_map(|(name, pattern)| {
+            Regex::new(pattern)
+                .ok()
+                .filter(|re| re.is_match(command))
+                .map(|_| name.as_str())
+        })
+    }
+}
+
+/// RTK's trust store maps the canonical path of a filter file to the SHA-256
+/// of the content the user approved with `rtk trust`.
+fn trust_status(path: &Path, bytes: &[u8]) -> Trust {
+    let Ok(canonical) = std::fs::canonicalize(path) else {
+        return Trust::Untrusted;
+    };
+    let Ok(store) = std::fs::read_to_string(crate::paths::rtk_trust_store()) else {
+        return Trust::Untrusted;
+    };
+    let Ok(store) = serde_json::from_str::<serde_json::Value>(&store) else {
+        return Trust::Untrusted;
+    };
+    let key = canonical.to_string_lossy();
+    match store
+        .pointer("/trusted")
+        .and_then(|t| t.get(key.as_ref()))
+        .and_then(|e| e.get("sha256"))
+        .and_then(|s| s.as_str())
+    {
+        Some(h) if h == crate::util::sha256_hex(bytes) => Trust::Trusted,
+        Some(_) => Trust::Changed,
+        None => Trust::Untrusted,
+    }
+}
+
+/// Byte range of the managed block, markers included, through the newline
+/// after the end marker.
+fn managed_block(text: &str) -> Option<(usize, usize)> {
+    let start = text.find(BLOCK_START)?;
+    let end_marker = start + text[start..].find(BLOCK_END)?;
+    let mut end = end_marker + BLOCK_END.len();
+    if text[end..].starts_with("\r\n") {
+        end += 2;
+    } else if text[end..].starts_with('\n') {
+        end += 1;
+    }
+    Some((start, end))
+}
+
+fn toml_str(s: &str) -> String {
+    toml::Value::String(s.to_string()).to_string()
+}
+
+pub fn render_block(filters: &[FilterDef]) -> String {
+    let mut out = String::new();
+    out.push_str(BLOCK_START);
+    out.push('\n');
+    out.push_str("# Generated by `mzn suggest --apply`. Edits inside this block are\n");
+    out.push_str("# overwritten on the next apply; move a filter above the block to keep it.\n");
+    for f in filters {
+        out.push('\n');
+        out.push_str(&format!("[filters.{}]\n", f.name));
+        out.push_str(&format!("description = {}\n", toml_str(&f.description)));
+        out.push_str(&format!("match_command = {}\n", toml_str(&f.match_command)));
+        if f.strip_ansi {
+            out.push_str("strip_ansi = true\n");
+        }
+        if !f.strip_lines_matching.is_empty() {
+            out.push_str("strip_lines_matching = [\n");
+            for p in &f.strip_lines_matching {
+                out.push_str(&format!("  {},\n", toml_str(p)));
+            }
+            out.push_str("]\n");
+        }
+        if let Some(n) = f.truncate_lines_at {
+            out.push_str(&format!("truncate_lines_at = {n}\n"));
+        }
+        if let Some(n) = f.tail_lines {
+            out.push_str(&format!("tail_lines = {n}\n"));
+        }
+        if let Some(s) = &f.on_empty {
+            out.push_str(&format!("on_empty = {}\n", toml_str(s)));
+        }
+    }
+    out.push_str(BLOCK_END);
+    out.push('\n');
+    out
+}
+
+/// New content for a filter file: the user's content untouched, with mzn's
+/// block replaced (or appended). An empty `filters` removes the block.
+/// Filters currently inside mzn's managed block, so a new apply can keep
+/// them instead of dropping filters for commands outside the current window.
+pub fn managed_defs(text: &str) -> Vec<FilterDef> {
+    let Some((start, end)) = managed_block(text) else {
+        return Vec::new();
+    };
+    let Ok(table) = text[start..end].parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let Some(filters) = table.get("filters").and_then(|v| v.as_table()) else {
+        return Vec::new();
+    };
+    let str_of = |d: &toml::Value, k: &str| d.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let usize_of = |d: &toml::Value, k: &str| {
+        d.get(k)
+            .and_then(|v| v.as_integer())
+            .and_then(|n| usize::try_from(n).ok())
+    };
+    filters
+        .iter()
+        .filter(|(name, _)| name.starts_with(NAME_PREFIX))
+        .filter_map(|(name, d)| {
+            Some(FilterDef {
+                name: name.clone(),
+                description: str_of(d, "description").unwrap_or_default(),
+                match_command: str_of(d, "match_command")?,
+                strip_ansi: d
+                    .get("strip_ansi")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                strip_lines_matching: d
+                    .get("strip_lines_matching")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|p| p.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                truncate_lines_at: usize_of(d, "truncate_lines_at"),
+                tail_lines: usize_of(d, "tail_lines"),
+                on_empty: str_of(d, "on_empty"),
+            })
+        })
+        .collect()
+}
+
+/// Existing managed filters plus `fresh`, where a fresh filter replaces an
+/// existing one with the same name. Sorted by name, as RTK orders them.
+pub fn merge_defs(existing: Vec<FilterDef>, fresh: &[FilterDef]) -> Vec<FilterDef> {
+    let mut out: Vec<FilterDef> = existing
+        .into_iter()
+        .filter(|e| !fresh.iter().any(|f| f.name == e.name))
+        .collect();
+    out.extend(fresh.iter().cloned());
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+pub fn with_managed_block(existing: Option<&str>, filters: &[FilterDef]) -> Result<String> {
+    let block = if filters.is_empty() {
+        String::new()
+    } else {
+        render_block(filters)
+    };
+    let new = match existing {
+        None => {
+            if filters.is_empty() {
+                return Ok(String::new());
+            }
+            format!(
+                "# RTK custom filters for this project. See `rtk trust`.\nschema_version = 1\n\n{block}"
+            )
+        }
+        Some(text) => {
+            let table = text
+                .parse::<toml::Table>()
+                .context("existing filter file is not valid TOML; not touching it")?;
+            if table.get("schema_version").and_then(|v| v.as_integer()) != Some(1) {
+                bail!(
+                    "existing filter file does not declare `schema_version = 1`; not touching it"
+                );
+            }
+            match managed_block(text) {
+                Some((s, e)) => format!("{}{}{}", &text[..s], block, &text[e..]),
+                None if filters.is_empty() => text.to_string(),
+                None => {
+                    let sep = if text.ends_with("\n\n") || text.is_empty() {
+                        ""
+                    } else if text.ends_with('\n') {
+                        "\n"
+                    } else {
+                        "\n\n"
+                    };
+                    format!("{text}{sep}{block}")
+                }
+            }
+        }
+    };
+    let parsed = new
+        .parse::<toml::Table>()
+        .context("generated filter file failed to parse (bug in mzn)")?;
+    for f in filters {
+        let def = parsed
+            .get("filters")
+            .and_then(|t| t.get(&f.name))
+            .context("generated filter missing after render (bug in mzn)")?;
+        let m = def
+            .get("match_command")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        Regex::new(m).context("generated match_command is not a valid regex (bug in mzn)")?;
+    }
+    Ok(new)
+}
+
+/// Apply a filter the same way RTK does, for the stages mzn generates:
+/// strip_ansi → strip_lines_matching → truncate_lines_at → tail_lines →
+/// on_empty. Used to estimate savings before suggesting a filter.
+pub fn simulate(f: &FilterDef, input: &str) -> String {
+    let ansi = Regex::new(r"\x1b\[[0-9;?]*[ -/]*[@-~]").expect("static regex");
+    let text = if f.strip_ansi {
+        ansi.replace_all(input, "").into_owned()
+    } else {
+        input.to_string()
+    };
+    let strips: Vec<Regex> = f
+        .strip_lines_matching
+        .iter()
+        .filter_map(|p| Regex::new(p).ok())
+        .collect();
+    let mut lines: Vec<String> = text
+        .lines()
+        .filter(|l| !strips.iter().any(|re| re.is_match(l)))
+        .map(|l| match f.truncate_lines_at {
+            Some(n) if l.chars().count() > n => {
+                let mut s: String = l.chars().take(n).collect();
+                s.push('…');
+                s
+            }
+            _ => l.to_string(),
+        })
+        .collect();
+    if let Some(n) = f.tail_lines
+        && lines.len() > n
+    {
+        let dropped = lines.len() - n;
+        lines = lines.split_off(dropped);
+        lines.insert(0, format!("... ({dropped} lines truncated)"));
+    }
+    let out = lines.join("\n");
+    if out.trim().is_empty()
+        && let Some(msg) = &f.on_empty
+    {
+        return msg.clone();
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn def(name: &str) -> FilterDef {
+        FilterDef {
+            name: name.into(),
+            description: "d \"q\"".into(),
+            match_command: r"^make\s+build(\s|$)".into(),
+            strip_ansi: true,
+            strip_lines_matching: vec![r"^\s*$".into()],
+            truncate_lines_at: None,
+            tail_lines: Some(2),
+            on_empty: Some("make build: ok".into()),
+        }
+    }
+
+    #[test]
+    fn creates_new_file() {
+        let s = with_managed_block(None, &[def("mzn-make-build")]).unwrap();
+        assert!(s.contains("schema_version = 1"));
+        assert!(s.contains("[filters.mzn-make-build]"));
+        assert!(s.contains(BLOCK_START) && s.contains(BLOCK_END));
+    }
+
+    #[test]
+    fn preserves_user_content_and_replaces_block() {
+        let user = "schema_version = 1\n\n[filters.mine]\nmatch_command = \"^foo\"\n";
+        let first = with_managed_block(Some(user), &[def("mzn-a")]).unwrap();
+        assert!(first.starts_with(user));
+        let second = with_managed_block(Some(&first), &[def("mzn-b")]).unwrap();
+        assert!(second.starts_with(user));
+        assert!(second.contains("mzn-b") && !second.contains("mzn-a"));
+        let removed = with_managed_block(Some(&second), &[]).unwrap();
+        assert_eq!(removed, format!("{user}\n"));
+    }
+
+    #[test]
+    fn keeps_existing_managed_filters() {
+        let first = with_managed_block(None, &[def("mzn-a")]).unwrap();
+        let kept = managed_defs(&first);
+        assert_eq!(kept, vec![def("mzn-a")]);
+        let merged = merge_defs(kept, &[def("mzn-b")]);
+        let second = with_managed_block(Some(&first), &merged).unwrap();
+        assert!(second.contains("[filters.mzn-a]") && second.contains("[filters.mzn-b]"));
+    }
+
+    #[test]
+    fn refuses_invalid_existing_file() {
+        assert!(with_managed_block(Some("not = [valid"), &[def("mzn-a")]).is_err());
+        assert!(with_managed_block(Some("x = 1\n"), &[def("mzn-a")]).is_err());
+    }
+
+    #[test]
+    fn simulates_pipeline() {
+        let f = def("x");
+        assert_eq!(
+            simulate(&f, "\x1b[32ma\x1b[0m\n\nb\nc"),
+            "... (1 lines truncated)\nb\nc"
+        );
+        assert_eq!(simulate(&f, "\n\n"), "make build: ok");
+    }
+}
