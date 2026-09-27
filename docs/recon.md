@@ -314,3 +314,26 @@ for duplicate Bash rewriting hooks.
   - Packaging order: `cargo install` and a static tarball first. Fedora COPR/RPM
     and a `.deb` come next, then a Homebrew tap (also covers Linuxbrew), then
     Windows.
+- **Implementation decisions** (2026-09-27, made autonomously per the owner's
+  instruction to finish end to end):
+  - `activate` does **not** replace RTK's hook. It keeps exactly one RTK Bash
+    hook (native over legacy, then user > project > local), disables the rest,
+    and adds mzn's `SessionEnd` hook to user settings (`--no-session-hook` to
+    skip). It has the confirmation prompt, backups, `state.json`, idempotence,
+    byte-exact `deactivate`, and a merge-with-diff path from brief §2.5.
+    Rationale: §2.5 of this file. RTK already logs hook decisions by
+    `tool_use_id`, so mzn needs no rewriting hook of its own.
+  - The plugin ships `/coach` only. The SessionEnd hook comes from
+    `mzn activate`, so plugin users and non-plugin users get the same single
+    hook and never a duplicate.
+  - `suggest --apply` and `activate` need RTK full mode. `analyze`, `doctor`,
+    `report` and `deactivate` always work.
+  - Generated filters only strip lines, using a fixed noise catalogue. A
+    pattern is rejected if any matched line mentions errors, failures or
+    warnings. Re-applying keeps earlier managed filters.
+  - The Homebrew tap is deferred. `install.sh` (static musl binary with a
+    SHA-256 check), `.deb`/`.rpm` and `cargo install` cover Linux first, as
+    decided above.
+- **Still untested against a real RTK** (container policy blocked building it):
+  the `rtk rewrite` exit codes and the `hook_decisions` schema come from RTK
+  0.49 source and are exercised only against a fake `rtk` in tests.
