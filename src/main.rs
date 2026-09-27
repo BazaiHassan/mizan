@@ -262,8 +262,8 @@ fn unified_diff(path: &Path, old: &str, new: &str) -> String {
         .unified_diff()
         .context_radius(3)
         .header(
-            &format!("a/{}", path.display()),
-            &format!("b/{}", path.display()),
+            &format!("{} (current)", path.display()),
+            &format!("{} (proposed)", path.display()),
         )
         .to_string()
 }
