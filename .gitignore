@@ -1,0 +1,6 @@
+/target
+.env
+.env.*
+*.jsonl
+!tests/fixtures/**/*.jsonl
+.claude/settings.local.json
