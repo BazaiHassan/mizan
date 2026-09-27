@@ -37,3 +37,20 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+[package.metadata.deb]
+maintainer = "Hassan Bazai <bazaee.hassan@gmail.com>"
+section = "devel"
+priority = "optional"
+assets = [
+  ["target/x86_64-unknown-linux-musl/release/mzn", "usr/bin/", "755"],
+  ["README.md", "usr/share/doc/mzn/", "644"],
+  ["NOTICE", "usr/share/doc/mzn/", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+  { source = "target/x86_64-unknown-linux-musl/release/mzn", dest = "/usr/bin/mzn", mode = "755" },
+  { source = "README.md", dest = "/usr/share/doc/mzn/README.md", mode = "644", doc = true },
+  { source = "NOTICE", dest = "/usr/share/doc/mzn/NOTICE", mode = "644", doc = true },
+]
