@@ -298,6 +298,45 @@ fn suggest_creates_file_when_missing() {
     assert!(written.contains("schema_version = 1"));
 }
 
+#[test]
+fn suggest_apply_keeps_earlier_managed_filters() {
+    let env = Env::new().with_rtk();
+    env.add_session("normal.jsonl", "s1.jsonl");
+    let filters = env.project.join(".rtk/filters.toml");
+    env.write(
+        &filters,
+        "schema_version = 1\n\n# >>> managed by mzn >>>\n[filters.mzn-old-tool]\nmatch_command = \"^old-tool(\\\\s|$)\"\nstrip_lines_matching = [\"^\\\\s*$\"]\n# <<< managed by mzn <<<\n",
+    );
+    env.ok(&["suggest", "--days", "36500", "--apply"]);
+    let parsed: toml::Table = fs::read_to_string(&filters).unwrap().parse().unwrap();
+    let names: Vec<&String> = parsed["filters"].as_table().unwrap().keys().collect();
+    assert!(names.iter().any(|n| *n == "mzn-old-tool"), "{names:?}");
+    assert!(
+        names.iter().any(|n| *n == "mzn-scripts-build-sh"),
+        "{names:?}"
+    );
+}
+
+#[test]
+fn writes_refused_outside_supported_rtk_range() {
+    let env = Env::new().with_rtk();
+    env.add_session("normal.jsonl", "s1.jsonl");
+    fs::write(
+        env.rtk.as_ref().unwrap(),
+        FAKE_RTK.replace("0.49.0", "0.30.0"),
+    )
+    .unwrap();
+    let out = env.mzn(&["suggest", "--days", "36500", "--apply"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("read-only"));
+    assert!(!env.project.join(".rtk/filters.toml").exists());
+    let out = env.mzn(&["activate", "--yes"]);
+    assert!(!out.status.success());
+    assert!(!env.user_settings().exists());
+    // Analysis still works.
+    env.ok(&["analyze", "--days", "36500"]);
+}
+
 // ---------------------------------------------------------------- doctor
 
 fn findings(v: &Value) -> Vec<(String, String)> {

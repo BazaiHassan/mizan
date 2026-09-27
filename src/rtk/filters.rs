@@ -177,6 +177,65 @@ pub fn render_block(filters: &[FilterDef]) -> String {
 
 /// New content for a filter file: the user's content untouched, with mzn's
 /// block replaced (or appended). An empty `filters` removes the block.
+/// Filters currently inside mzn's managed block, so a new apply can keep
+/// them instead of dropping filters for commands outside the current window.
+pub fn managed_defs(text: &str) -> Vec<FilterDef> {
+    let Some((start, end)) = managed_block(text) else {
+        return Vec::new();
+    };
+    let Ok(table) = text[start..end].parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let Some(filters) = table.get("filters").and_then(|v| v.as_table()) else {
+        return Vec::new();
+    };
+    let str_of = |d: &toml::Value, k: &str| d.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let usize_of = |d: &toml::Value, k: &str| {
+        d.get(k)
+            .and_then(|v| v.as_integer())
+            .and_then(|n| usize::try_from(n).ok())
+    };
+    filters
+        .iter()
+        .filter(|(name, _)| name.starts_with(NAME_PREFIX))
+        .filter_map(|(name, d)| {
+            Some(FilterDef {
+                name: name.clone(),
+                description: str_of(d, "description").unwrap_or_default(),
+                match_command: str_of(d, "match_command")?,
+                strip_ansi: d
+                    .get("strip_ansi")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                strip_lines_matching: d
+                    .get("strip_lines_matching")
+                    .and_then(|v| v.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|p| p.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                truncate_lines_at: usize_of(d, "truncate_lines_at"),
+                tail_lines: usize_of(d, "tail_lines"),
+                on_empty: str_of(d, "on_empty"),
+            })
+        })
+        .collect()
+}
+
+/// Existing managed filters plus `fresh`, where a fresh filter replaces an
+/// existing one with the same name. Sorted by name, as RTK orders them.
+pub fn merge_defs(existing: Vec<FilterDef>, fresh: &[FilterDef]) -> Vec<FilterDef> {
+    let mut out: Vec<FilterDef> = existing
+        .into_iter()
+        .filter(|e| !fresh.iter().any(|f| f.name == e.name))
+        .collect();
+    out.extend(fresh.iter().cloned());
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
 pub fn with_managed_block(existing: Option<&str>, filters: &[FilterDef]) -> Result<String> {
     let block = if filters.is_empty() {
         String::new()
@@ -312,6 +371,16 @@ mod tests {
         assert!(second.contains("mzn-b") && !second.contains("mzn-a"));
         let removed = with_managed_block(Some(&second), &[]).unwrap();
         assert_eq!(removed, format!("{user}\n"));
+    }
+
+    #[test]
+    fn keeps_existing_managed_filters() {
+        let first = with_managed_block(None, &[def("mzn-a")]).unwrap();
+        let kept = managed_defs(&first);
+        assert_eq!(kept, vec![def("mzn-a")]);
+        let merged = merge_defs(kept, &[def("mzn-b")]);
+        let second = with_managed_block(Some(&first), &merged).unwrap();
+        assert!(second.contains("[filters.mzn-a]") && second.contains("[filters.mzn-b]"));
     }
 
     #[test]

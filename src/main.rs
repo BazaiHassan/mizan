@@ -3,7 +3,7 @@ use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use mzn::analyze::{self, Analysis, Inputs};
 use mzn::rtk::db::RtkDb;
-use mzn::rtk::filters::{FilterFile, with_managed_block};
+use mzn::rtk::filters::{FilterFile, managed_defs, merge_defs, with_managed_block};
 use mzn::rtk::{self, Classifier, Mode};
 use mzn::session::{self, BashCall};
 use mzn::settings::{self, Restore};
@@ -300,6 +300,9 @@ fn suggest_cmd(
         return Ok(ExitCode::SUCCESS);
     }
 
+    if apply {
+        require_full_mode("suggest --apply")?;
+    }
     let (a, calls) = load(scope, 30)?;
     let pf = FilterFile::load(&path);
     let gf = FilterFile::load(&paths::rtk_global_filters());
@@ -309,12 +312,15 @@ fn suggest_cmd(
         ..Options::default()
     };
     let (sugg, skipped) = suggest::suggest(&a, &calls, &|k| user_filter_for(&pf, &gf, k), &opts);
-    let filters: Vec<_> = sugg.iter().map(|s| s.filter.clone()).collect();
-
-    let new = if filters.is_empty() {
+    let fresh: Vec<_> = sugg.iter().map(|s| s.filter.clone()).collect();
+    let new = if fresh.is_empty() {
         None
     } else {
-        Some(with_managed_block(existing.as_deref(), &filters)?)
+        let kept = existing.as_deref().map(managed_defs).unwrap_or_default();
+        Some(with_managed_block(
+            existing.as_deref(),
+            &merge_defs(kept, &fresh),
+        )?)
     };
 
     if json {
@@ -387,6 +393,20 @@ fn suggest_cmd(
     Ok(ExitCode::SUCCESS)
 }
 
+/// Outside the supported RTK range mzn only analyzes; it changes nothing.
+fn require_full_mode(what: &str) -> Result<()> {
+    let info = rtk::detect();
+    if info.mode == Mode::Full {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "`mzn {what}` needs RTK {}–<{} (read-only mode otherwise): {}",
+        rtk::MIN_FULL,
+        rtk::MAX_TESTED_EXCLUSIVE,
+        info.describe()
+    )
+}
+
 fn session_hook_command() -> String {
     if paths::which("mzn").is_some() {
         settings::SESSION_END_COMMAND.to_string()
@@ -399,6 +419,7 @@ fn session_hook_command() -> String {
 }
 
 fn activate_cmd(project: Option<&Path>, yes: bool, session_hook: bool) -> Result<ExitCode> {
+    require_full_mode("activate")?;
     let project = paths::resolve_project(project);
     let report = doctor::run(&project);
     print!("{}", doctor::render_text(&report));
