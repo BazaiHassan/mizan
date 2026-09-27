@@ -1,6 +1,6 @@
 [package]
 name = "mzn"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Hassan Bazai <bazaee.hassan@gmail.com>"]

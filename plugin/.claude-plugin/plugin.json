@@ -1,7 +1,7 @@
 {
   "name": "mzn",
   "displayName": "mzn — RTK coach",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Finds token waste in your Claude Code sessions and tunes RTK to this project. Local only: no network, no LLM calls, no telemetry.",
   "author": {
     "name": "Hassan Bazai",
@@ -10,5 +10,10 @@
   "homepage": "https://github.com/BazaiHassan/mizan",
   "repository": "https://github.com/BazaiHassan/mizan",
   "license": "Apache-2.0",
-  "keywords": ["rtk", "tokens", "cost", "filters"]
+  "keywords": [
+    "rtk",
+    "tokens",
+    "cost",
+    "filters"
+  ]
 }
