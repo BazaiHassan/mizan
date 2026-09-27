@@ -276,6 +276,15 @@ for duplicate Bash rewriting hooks.
 5. Count subagent (sidechain) Bash calls in reports?
 
 ## 9. Decisions
+- **Repositioning accepted** (2026-09-27): mzn builds on `rtk discover` / `rtk gain`
+  / `hook_decisions` and focuses on per-project filter generation and reporting.
+  It does not re-implement RTK's classifier.
+- **Count everything** (2026-09-27): subagent (sidechain) Bash calls are included
+  in all counts and are flagged so reports can break them out.
+- **Fork RTK** (2026-09-27): approved. It is not done yet because this session can't
+  reach `rtk-ai/rtk`, so the fork has to be made from the user's account.
+- **Version "1.0.0"** (2026-09-27): pending clarification. See the open question
+  below.
 - **Platform priority** (2026-09-27): Linux first — Fedora and Ubuntu as primary
   targets, then other major distros (Debian, Arch, openSUSE, …); macOS second;
   Windows last. Implications:
